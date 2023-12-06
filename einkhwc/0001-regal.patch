@@ -1,0 +1,1619 @@
+From d3f070a60381edf0c10911c92a64cb6b4a1cf8da Mon Sep 17 00:00:00 2001
+From: chenchangxiong <chenchangxiong@wisky.com.cn>
+Date: Thu, 27 Apr 2023 15:56:56 +0800
+Subject: [PATCH 1/2] =?UTF-8?q?=E6=B7=BB=E5=8A=A0regal=E6=94=AF=E6=8C=81?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Change-Id: I6538e5e15dfa98b6a83958898eef051354a20595
+---
+ autofd.h                  |   0
+ autogl.h                  |   0
+ autolock.cpp              |   0
+ autolock.h                |   0
+ bp                        |   0
+ drmframebuffer.h          |   0
+ drmhwcgralloc.h           |   0
+ drmhwcomposer.h           |   0
+ einkcompositorworker.cpp  | 328 +++++++++++++++++++------
+ einkcompositorworker.h    |  39 ++-
+ glworker.cpp              |   0
+ glworker.h                |   0
+ hwc_debug.h               |   0
+ hwc_util.cpp              |   0
+ hwc_util.h                |   0
+ hwcomposer.cpp            | 496 ++++++++++++++++++++++++++++++++++----
+ libregal/lib/libeink.so   | Bin 20212 -> 20208 bytes
+ libregal/lib64/libeink.so | Bin 10776 -> 10776 bytes
+ libregal/libeink.h        | 135 +++++------
+ rgb888_to_gray_256_neon.s |   0
+ separate_rects.cpp        |   0
+ separate_rects.h          |   0
+ vsyncworker.cpp           |   0
+ vsyncworker.h             |   0
+ worker.cpp                |   0
+ worker.h                  |   0
+ 26 files changed, 782 insertions(+), 216 deletions(-)
+ mode change 100644 => 100755 autofd.h
+ mode change 100644 => 100755 autogl.h
+ mode change 100644 => 100755 autolock.cpp
+ mode change 100644 => 100755 autolock.h
+ mode change 100644 => 100755 bp
+ mode change 100644 => 100755 drmframebuffer.h
+ mode change 100644 => 100755 drmhwcgralloc.h
+ mode change 100644 => 100755 drmhwcomposer.h
+ mode change 100644 => 100755 glworker.cpp
+ mode change 100644 => 100755 glworker.h
+ mode change 100644 => 100755 hwc_debug.h
+ mode change 100644 => 100755 hwc_util.cpp
+ mode change 100644 => 100755 hwc_util.h
+ mode change 100644 => 100755 rgb888_to_gray_256_neon.s
+ mode change 100644 => 100755 separate_rects.cpp
+ mode change 100644 => 100755 separate_rects.h
+ mode change 100644 => 100755 vsyncworker.cpp
+ mode change 100644 => 100755 vsyncworker.h
+ mode change 100644 => 100755 worker.cpp
+ mode change 100644 => 100755 worker.h
+
+diff --git a/autofd.h b/autofd.h
+old mode 100644
+new mode 100755
+diff --git a/autogl.h b/autogl.h
+old mode 100644
+new mode 100755
+diff --git a/autolock.cpp b/autolock.cpp
+old mode 100644
+new mode 100755
+diff --git a/autolock.h b/autolock.h
+old mode 100644
+new mode 100755
+diff --git a/bp b/bp
+old mode 100644
+new mode 100755
+diff --git a/drmframebuffer.h b/drmframebuffer.h
+old mode 100644
+new mode 100755
+diff --git a/drmhwcgralloc.h b/drmhwcgralloc.h
+old mode 100644
+new mode 100755
+diff --git a/drmhwcomposer.h b/drmhwcomposer.h
+old mode 100644
+new mode 100755
+diff --git a/einkcompositorworker.cpp b/einkcompositorworker.cpp
+index 6ceb5bb..0c4150e 100755
+--- a/einkcompositorworker.cpp
++++ b/einkcompositorworker.cpp
+@@ -99,9 +99,6 @@ EinkCompositorWorker::~EinkCompositorWorker() {
+   }
+   if (gray256_new_buffer != NULL)
+     free(gray256_new_buffer);
+-
+-  if (gray256_old_buffer != NULL)
+-    free(gray256_old_buffer);
+ }
+ 
+ static int pvi_check_wf(const char *waveform)
+@@ -139,6 +136,10 @@ static int pvi_check_wf(const char *waveform)
+ 
+ int EinkCompositorWorker::Init(struct hwc_context_t *ctx) {
+   hwc_context_ = ctx;
++
++
++  ALOGE("111111 eink init error,------------chencx--------\n");
++
+   int ret = sw_sync_timeline_create();
+   if (ret < 0) {
+     ALOGE("Failed to create sw sync timeline %d", ret);
+@@ -160,6 +161,11 @@ int EinkCompositorWorker::Init(struct hwc_context_t *ctx) {
+       close(ebc_fd);
+       return -1;
+   }
++  if(ioctl(ebc_fd, EBC_GET_BUF_FORMAT, &ebc_buf_format)!=0){
++      ALOGE("EBC_GET_BUF_FORMAT failed\n");
++      close(ebc_fd);
++      return -1;
++  }
+   ebc_buffer_base = mmap(0, EINK_FB_SIZE*4, PROT_READ|PROT_WRITE, MAP_SHARED, ebc_fd, 0);
+   if (ebc_buffer_base == MAP_FAILED) {
+       ALOGE("Error mapping the ebc buffer (%s)\n", strerror(errno));
+@@ -180,38 +186,36 @@ int EinkCompositorWorker::Init(struct hwc_context_t *ctx) {
+   gray16_buffer = (int*)(vaddr_real + commit_buf_info.offset);
+ 
+   gray256_new_buffer = (int *)malloc(ebc_buf_info.width * ebc_buf_info.height);
+-  gray256_old_buffer = (int *)malloc(ebc_buf_info.width * ebc_buf_info.height);
+-  memset(gray256_old_buffer, 0xff, ebc_buf_info.width * ebc_buf_info.height);
+   memset(gray256_new_buffer, 0xff, ebc_buf_info.width * ebc_buf_info.height);
+ 
+   //init waveform for eink regal mode
+-  waveform_fd = open("/dev/waveform", O_RDWR,0);
+-  if (waveform_fd < 0) {
+-      ALOGE("open /dev/waveform failed\n");
+-      goto OUT;
+-  }
+-  waveform_base = mmap(0, 0x100000, PROT_READ|PROT_WRITE, MAP_SHARED, waveform_fd, 0);
+-  if (waveform_base == MAP_FAILED) {
+-      ALOGE("Error mapping the waveform buffer (%s)\n", strerror(errno));
+-      close(waveform_fd);
+-      waveform_fd = -1;
+-      goto OUT;
+-  }
+-
+-  ret = pvi_check_wf((char *)waveform_base);
+-  if (ret) {
+-      ALOGE("pvi check wf failed\n");
+-      goto OUT;
+-  }
+-  ret = EInk_Init((char *)waveform_base);
+-  if (ret) {
+-      ALOGE("EInk_Init error, ret = %d\n", ret);
+-      close(waveform_fd);
+-      waveform_fd = -1;
+-      goto OUT;
++  if (ebc_buf_format == EBC_Y8) {
++    waveform_fd = open("/dev/waveform", O_RDWR,0);
++    if (waveform_fd < 0) {
++        ALOGE("open /dev/waveform failed\n");
++        goto OUT;
++    }
++    waveform_base = mmap(0, 0x100000, PROT_READ|PROT_WRITE, MAP_SHARED, waveform_fd, 0);
++    if (waveform_base == MAP_FAILED) {
++        ALOGE("Error mapping the waveform buffer (%s)\n", strerror(errno));
++        close(waveform_fd);
++        waveform_fd = -1;
++        goto OUT;
++    }
++    ret = pvi_check_wf((char *)waveform_base);
++    if (ret) {
++        ALOGE("pvi check wf failed\n");
++        goto OUT;
++    }
++    ret = EInk_Init((char *)waveform_base);
++    if (ret) {
++        ALOGE("eink init error, ret = %d\n", ret);
++        close(waveform_fd);
++        waveform_fd = -1;
++        goto OUT;
++    }
++    ALOGD("eink regal lib init success\n");
+   }
+-  ALOGD("eink regal lib init success\n");
+-
+ OUT:
+   return InitWorker();
+ }
+@@ -361,13 +365,13 @@ extern void Luma8bit_to_4bit_row_16(int  *src,  int *dst, short int *res0,  shor
+ 
+ extern int gray256_to_gray16_dither(char *gray256_addr,int *gray16_buffer,int  panel_h, int panel_w,int vir_width);
+ 
++extern int gray256_to_gray16_dither_y8(char *gray256_addr,char *gray16_buffer,int  panel_h, int panel_w,int vir_width);
+ extern int gray256_to_gray16(char *gray256_addr,int *gray16_buffer,int h,int w,int vir_w);
+-
++extern void  change_4bit_to_8bit(unsigned char *in_buffer, unsigned char *out_buffer, int size);
++extern void do_gray256_buffer(uint32_t *buffer_in, uint32_t *buffer_out, int width, int height);
+ extern int gray256_to_gray2(char *gray256_addr,int *gray16_buffer,int h,int w,int vir_w);
+ 
+-extern void Luma8bit_to_4bit_row_2(short int  *src,  char *dst, short int *res0,  short int*res1, int w,int threshold);
+-
+-
++extern int gray256_to_gray2_dither_y8(char *gray256_addr,char *gray2_buffer,int  panel_h, int panel_w,int vir_width,Region region);
+ extern int gray256_to_gray2_dither(char *gray256_addr,char *gray2_buffer,int  panel_h, int panel_w,int vir_width,Region region);
+ 
+ extern void Rgb888_to_color_eink(char *dst,int *src,int  fb_height, int fb_width,int vir_width);
+@@ -561,7 +565,7 @@ int EinkCompositorWorker::Rgba888ToGray16ByRga(int *output_buffer, const buffer_
+     } else if ((epd_mode == EPD_DU4) || (epd_mode == EPD_AUTO_DU4)) {
+         contrast_key = 0xfffffaaa55500000;
+     }
+-//使用新的对比度调节方法debug.sf.gamma.gamma，不再使用persist.vendor.hwc.contrast_key属性
++//使???碌亩员榷鹊??诜???debug.sf.gamma.gamma??????使??persist.vendor.hwc.contrast_key????
+ /*
+     else {
+         char value[PROPERTY_VALUE_MAX];
+@@ -671,6 +675,103 @@ int EinkCompositorWorker::Rgba888ToGray256ByRga(DrmRgaBuffer &rgaBuffer,const bu
+     return ret;
+ }
+ 
++int EinkCompositorWorker::Rgba888ToGray256ByRga2(DrmRgaBuffer &rgaBuffer, const buffer_handle_t  &fb_handle, int epd_mode) {
++    ATRACE_CALL();
++    int ret = 0;
++    int rga_transform = 0;
++    int src_l,src_t,src_w,src_h;
++    int dst_l,dst_t,dst_r,dst_b;
++
++    int dst_w,dst_h,dst_stride;
++    int src_buf_w,src_buf_h,src_buf_stride,src_buf_format;
++    rga_info_t src, dst;
++    memset(&src, 0, sizeof(rga_info_t));
++    memset(&dst, 0, sizeof(rga_info_t));
++    src.fd = -1;
++    dst.fd = -1;
++
++#if (!RK_PER_MODE && RK_DRM_GRALLOC)
++    src_buf_w = hwc_get_handle_attibute(fb_handle,ATT_WIDTH);
++    src_buf_h = hwc_get_handle_attibute(fb_handle,ATT_HEIGHT);
++    src_buf_stride = hwc_get_handle_attibute(fb_handle,ATT_STRIDE);
++    src_buf_format = hwc_get_handle_attibute(fb_handle,ATT_FORMAT);
++#else
++    src_buf_w = hwc_get_handle_width(fb_handle);
++    src_buf_h = hwc_get_handle_height(fb_handle);
++    src_buf_stride = hwc_get_handle_stride(fb_handle);
++    src_buf_format = hwc_get_handle_format(fb_handle);
++#endif
++
++    src_l = 0;
++    src_t = 0;
++    src_w = ebc_buf_info.width - (ebc_buf_info.width % 8);
++    src_h = ebc_buf_info.height - (ebc_buf_info.height % 2);
++
++
++    dst_l = 0;
++    dst_t = 0;
++    dst_w = ebc_buf_info.width - (ebc_buf_info.width % 8);
++    dst_h = ebc_buf_info.height - (ebc_buf_info.height % 2);
++
++
++    if(dst_w < 0 || dst_h <0 )
++      ALOGE("RGA invalid dst_w=%d,dst_h=%d",dst_w,dst_h);
++
++    dst_stride = rgaBuffer.buffer()->getStride();
++
++    src.sync_mode = RGA_BLIT_SYNC;
++    rga_set_rect(&src.rect,
++                src_l, src_t, src_w, src_h,
++                src_buf_stride, src_buf_h, src_buf_format);
++    rga_set_rect(&dst.rect, dst_l, dst_t,  dst_w, dst_h, dst_w, dst_h, RK_FORMAT_Y4);
++
++    ALOGD_IF(log_level(DBG_INFO),"RK_RGA_PREPARE_SYNC rgaRotateScale  : src[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x],dst[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x]",
++        src.rect.xoffset, src.rect.yoffset, src.rect.width, src.rect.height, src.rect.wstride, src.rect.hstride, src.rect.format,
++        dst.rect.xoffset, dst.rect.yoffset, dst.rect.width, dst.rect.height, dst.rect.wstride, dst.rect.hstride, dst.rect.format);
++    ALOGD_IF(log_level(DBG_INFO),"RK_RGA_PREPARE_SYNC rgaRotateScale : src hnd=%p,dst hnd=%p, format=0x%x, transform=0x%x\n",
++        (void*)fb_handle, (void*)(rgaBuffer.buffer()->handle), HAL_PIXEL_FORMAT_RGBA_8888, rga_transform);
++
++    src.hnd = fb_handle;
++    dst.hnd = rgaBuffer.buffer()->handle;
++    dst.color_space_mode = 0x1 << 2;
++    src.rotation = rga_transform;
++
++    dst.dither.enable = 0;
++    dst.dither.mode = 0;
++
++    //A2,DU only support two greys(f,0), DU4 support greys(f,a,5,0), others support 16 greys
++    uint64_t contrast_key =0xfedcba9876543210;
++    if ((epd_mode == EPD_A2) || (epd_mode == EPD_DU) || (epd_mode == EPD_AUTO_DU)) {
++        contrast_key = 0xffffff0000000000;
++    } else if ((epd_mode == EPD_DU4) || (epd_mode == EPD_AUTO_DU4)) {
++        contrast_key = 0xfffffaaa55500000;
++    }
++//使???碌亩员榷鹊??诜???debug.sf.gamma.gamma??????使??persist.vendor.hwc.contrast_key????
++/*
++    else {
++        char value[PROPERTY_VALUE_MAX];
++        property_get("persist.vendor.hwc.contrast_key",value,"0xffccba9876540000");
++        sscanf(value,"%" PRIx64,&contrast_key);
++    }
++*/
++    dst.dither.lut0_l = (contrast_key & 0xffff);
++    dst.dither.lut0_h = (contrast_key & 0xffff0000) >> 16;
++    dst.dither.lut1_l = (contrast_key & 0xffff00000000) >> 32;
++    dst.dither.lut1_h = (contrast_key & 0xffff000000000000) >> 48;
++    RockchipRga& rkRga(RockchipRga::get());
++    ret = rkRga.RkRgaBlit(&src, &dst, NULL);
++    if(ret) {
++        ALOGE("rgaRotateScale error : src[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x],dst[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x]",
++            src.rect.xoffset, src.rect.yoffset, src.rect.width, src.rect.height, src.rect.wstride, src.rect.hstride, src.rect.format,
++            dst.rect.xoffset, dst.rect.yoffset, dst.rect.width, dst.rect.height, dst.rect.wstride, dst.rect.hstride, dst.rect.format);
++        ALOGE("rgaRotateScale error : %s,src hnd=%p,dst hnd=%p",
++            strerror(errno), (void*)fb_handle, (void*)(rgaBuffer.buffer()->handle));
++    }
++    DumpLayer("rga", dst.hnd);
++
++
++    return ret;
++}
+ 
+ int EinkCompositorWorker::RgaClipGrayRect(DrmRgaBuffer &rgaBuffer,const buffer_handle_t       &fb_handle) {
+     ATRACE_CALL();
+@@ -765,7 +866,10 @@ int EinkCompositorWorker::DumpEinkSurface(int *buffer){
+           ALOGW("Could not open %s\n",data_name);
+       } else{
+           ALOGW("open %s and write ok\n",data_name);
+-          fwrite(buffer, ebc_buf_info.height * ebc_buf_info.width >> 1 , 1, file);
++          if (ebc_buf_format == EBC_Y4)
++              fwrite(buffer, ebc_buf_info.height * ebc_buf_info.width >> 1 , 1, file);
++          else
++              fwrite(buffer, ebc_buf_info.height * ebc_buf_info.width , 1, file);
+           fclose(file);
+ 
+       }
+@@ -822,7 +926,7 @@ int EinkCompositorWorker::PostEinkY8(int *buffer, Rect rect, int mode){
+   commit_buf_info.win_y1 = rect.top;
+   commit_buf_info.win_y2 = rect.bottom;
+   commit_buf_info.epd_mode = mode;
+-  commit_buf_info.needpic = 0;
++  commit_buf_info.needpic = 2;
+ 
+   ALOGD_IF(log_level(DBG_DEBUG),"%s, line = %d ,mode = %d, (x1,x2,y1,y2) = (%d,%d,%d,%d) ",
+             __FUNCTION__,__LINE__,mode,commit_buf_info.win_x1,commit_buf_info.win_x2,
+@@ -969,7 +1073,10 @@ int EinkCompositorWorker::ConvertToColorEink1(const buffer_handle_t &fb_handle){
+ 
+   if(output_format == HAL_PIXEL_FORMAT_RGBA_8888) {
+     image_to_cfa_grayscale_gen2_ARGBB8888(width, height, (unsigned char *)framebuffer_base, (unsigned char *)gray256_new_buffer);
+-    gray256_to_gray16_dither((char *)gray256_new_buffer, gray16_buffer, height, width, ebc_buf_info.width);
++    if (ebc_buf_format == EBC_Y4)
++      gray256_to_gray16_dither((char *)gray256_new_buffer, gray16_buffer, height, width, ebc_buf_info.width);
++    else
++      do_gray256_buffer((uint32_t *)gray256_new_buffer, (uint32_t *)gray16_buffer, width, height);
+   }
+   if(framebuffer_base != NULL){
+     hwc_unlock(src_hnd);
+@@ -979,22 +1086,7 @@ int EinkCompositorWorker::ConvertToColorEink1(const buffer_handle_t &fb_handle){
+   return 0;
+ }
+ 
+-static void do_gray256_buffer(uint32_t *buffer_in, uint32_t *buffer_out, int width, int height)
+-{
+-	uint32_t src_data;
+-	uint32_t *src = buffer_in;
+-	uint32_t *dst = buffer_out;
+-
+-	for(int i = 0; i < height; i++) {
+-		for(int j = 0; j< width/4; j++) {
+-			src_data = *src++;
+-			src_data &= 0xf0f0f0f0;
+-			*dst++ = src_data;
+-		}
+-	}
+-}
+-
+-int EinkCompositorWorker::InToOrOutY8Regal(const buffer_handle_t &fb_handle) {
++int EinkCompositorWorker::IntoY8Regal(const buffer_handle_t &fb_handle) {
+ 
+   DumpLayer("rgba", fb_handle);
+ 
+@@ -1035,7 +1127,8 @@ int EinkCompositorWorker::InToOrOutY8Regal(const buffer_handle_t &fb_handle) {
+     return ret;
+   }
+   do_gray256_buffer((uint32_t *)rga_output_addr, (uint32_t *)gray16_buffer, ebc_buf_info.width, ebc_buf_info.height);
+-  memcpy(gray256_old_buffer, gray16_buffer, ebc_buf_info.width * ebc_buf_info.height);
++  gray_cur_buffer = gray16_buffer;
++  gray_pre_buffer = gray16_buffer;
+ 
+   if(rga_output_addr != NULL){
+     hwc_unlock(src_hnd);
+@@ -1085,13 +1178,83 @@ int EinkCompositorWorker::ConvertToY8Regal(const buffer_handle_t &fb_handle) {
+     return ret;
+   }
+   do_gray256_buffer((uint32_t *)rga_output_addr, (uint32_t *)gray16_buffer, ebc_buf_info.width, ebc_buf_info.height);
+-  eink_process((uint8_t *)gray16_buffer, (uint8_t *)gray256_old_buffer, ebc_buf_info.width, ebc_buf_info.height);
+-  memcpy(gray256_old_buffer, gray16_buffer, ebc_buf_info.width * ebc_buf_info.height);
++  if(ioctl(ebc_fd, EBC_DROP_PREV_BUFFER, NULL)) {
++    eink_process((uint8_t *)gray16_buffer, (uint8_t *)gray_cur_buffer, ebc_buf_info.width, ebc_buf_info.height);
++    gray_pre_buffer = gray_cur_buffer;
++    gray_cur_buffer = gray16_buffer;
++  } else {
++    eink_process((uint8_t *)gray16_buffer, (uint8_t *)gray_pre_buffer, ebc_buf_info.width, ebc_buf_info.height);
++    gray_cur_buffer = gray16_buffer;
++  }
++
++  if(rga_output_addr != NULL){
++    hwc_unlock(src_hnd);
++    rga_output_addr = NULL;
++  }
++  return 0;
++}
++
++int EinkCompositorWorker::ConvertToY8Dither(const buffer_handle_t &fb_handle, int epd_mode) {
++
++  DumpLayer("rgba", fb_handle);
++
++  ALOGD_IF(log_level(DBG_DEBUG), "%s", __FUNCTION__);
++
++  char *gray256_addr = NULL;
++  int framebuffer_wdith, framebuffer_height, output_format, ret;
++  framebuffer_wdith = ebc_buf_info.width - (ebc_buf_info.width % 8);
++  framebuffer_height = ebc_buf_info.height - (ebc_buf_info.height % 2);
++  output_format = HAL_PIXEL_FORMAT_YCrCb_NV12;
++  
++  DrmRgaBuffer &rga_buffer = rgaBuffers[0];
++  if (!rga_buffer.Allocate(framebuffer_wdith, framebuffer_height, output_format)) {
++    ALOGE("Failed to allocate rga buffer with size %dx%d", framebuffer_wdith, framebuffer_height);
++    return -ENOMEM;
++  }
++  
++  int width,height,stride,byte_stride,format,size;
++  buffer_handle_t src_hnd = rga_buffer.buffer()->handle;
++  
++  width = hwc_get_handle_attibute(src_hnd,ATT_WIDTH);
++  height = hwc_get_handle_attibute(src_hnd,ATT_HEIGHT);
++  stride = hwc_get_handle_attibute(src_hnd,ATT_STRIDE);
++  byte_stride = hwc_get_handle_attibute(src_hnd,ATT_BYTE_STRIDE);
++  format = hwc_get_handle_attibute(src_hnd,ATT_FORMAT);
++  size = hwc_get_handle_attibute(src_hnd,ATT_SIZE);
++
++  if (epd_mode == EPD_A2 || epd_mode == EPD_DU || epd_mode == EPD_DU4 || epd_mode == EPD_AUTO_DU || epd_mode == EPD_AUTO_DU4)
++      ret = Rgba888ToGray256ByRga2(rga_buffer, fb_handle, epd_mode);
++  else
++      ret = Rgba888ToGray256ByRga(rga_buffer, fb_handle);
++  if (ret) {
++    ALOGE("Failed to prepare rga buffer for RGA rotate %d", ret);
++    return ret;
++  }
++  rga_output_addr = NULL;
++  ret = hwc_lock(src_hnd, GRALLOC_USAGE_SW_READ_MASK | GRALLOC_USAGE_SW_WRITE_MASK, //gr_handle->usage,
++                0, 0, width, height, (void **)&rga_output_addr);
++  if(ret || rga_output_addr == NULL){
++    ALOGE("Failed to lock rga buffer, rga_output_addr =%p, ret=%d", rga_output_addr, ret);
++    return ret;
++  }
++
++  ioctl(ebc_fd, EBC_DROP_PREV_BUFFER, NULL);
++
++  if (epd_mode == EPD_A2 || epd_mode == EPD_DU || epd_mode == EPD_DU4 || epd_mode == EPD_AUTO_DU || epd_mode == EPD_AUTO_DU4)
++    change_4bit_to_8bit((unsigned char *)rga_output_addr, (unsigned char *)gray16_buffer, ebc_buf_info.width*ebc_buf_info.height>>1);
++  else
++    do_gray256_buffer((uint32_t *)rga_output_addr, (uint32_t *)gray16_buffer, ebc_buf_info.width, ebc_buf_info.height);
++  //gray256_addr = rga_output_addr;
++  //gray256_to_gray16_dither_y8(gray256_addr,(char *)gray16_buffer,ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
++
++  gray_cur_buffer = gray16_buffer;
++  gray_pre_buffer = gray16_buffer;
+ 
+   if(rga_output_addr != NULL){
+     hwc_unlock(src_hnd);
+     rga_output_addr = NULL;
+   }
++
+   return 0;
+ }
+ 
+@@ -1206,8 +1369,10 @@ int EinkCompositorWorker::ConvertToY1Dither(const buffer_handle_t &fb_handle) {
+     ALOGE("rga_output_addr == NULL, hwc_lock maybe failed\n");
+ 
+   Region screen_region(Rect(0, 0, ebc_buf_info.width - 1, ebc_buf_info.height -1));
+-  gray256_to_gray2_dither(gray256_addr,(char *)gray16_buffer,ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width,screen_region);
+-
++  if (ebc_buf_format == EBC_Y4)
++    gray256_to_gray2_dither(gray256_addr,(char *)gray16_buffer,ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width,screen_region);
++  else
++    gray256_to_gray2_dither_y8(gray256_addr,(char *)gray16_buffer,ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width,screen_region);
+ 
+   if(rga_output_addr != NULL){
+     hwc_unlock(src_hnd);
+@@ -1333,13 +1498,14 @@ int EinkCompositorWorker::SetEinkMode(EinkComposition *composition) {
+   }
+ 
+   if (last_regal) {
+-  	if (composition->einkMode != EPD_FULL_GLD16
+-		&& composition->einkMode != EPD_FULL_GLR16
+-		&& composition->einkMode != EPD_PART_GLD16
+-		&& composition->einkMode != EPD_PART_GLR16
+-		&& composition->einkMode != EPD_FORCE_FULL) {
+-  		last_regal = !last_regal;
+-  	}
++       if (composition->einkMode != EPD_FULL_GLD16
++               && composition->einkMode != EPD_FULL_GLR16
++               && composition->einkMode != EPD_PART_GLD16
++               && composition->einkMode != EPD_PART_GLR16
++               && composition->einkMode != EPD_FORCE_FULL
++               && composition->einkMode != EPD_RESUME) {
++               last_regal = !last_regal;
++       }
+   }
+ 
+   switch(composition->einkMode){
+@@ -1348,7 +1514,10 @@ int EinkCompositorWorker::SetEinkMode(EinkComposition *composition) {
+       A2Commit(EPD_A2_DITHER);
+       break;
+     case EPD_A2:
+-      ConvertToY4Dither(composition->fb_handle, composition->einkMode);
++	if (ebc_buf_format == EBC_Y4)
++        ConvertToY4Dither(composition->fb_handle, composition->einkMode);
++	else
++        ConvertToY8Dither(composition->fb_handle, composition->einkMode);
+       A2Commit(EPD_A2);
+       break;
+     case EPD_SUSPEND:
+@@ -1358,22 +1527,23 @@ int EinkCompositorWorker::SetEinkMode(EinkComposition *composition) {
+     case EPD_FULL_GLR16:
+     case EPD_PART_GLD16:
+     case EPD_PART_GLR16:
+-    #if 0 // new ebc no support regal mode now, will support later versions
+       if (waveform_fd > 0) {
+-	   if (last_regal) {
+-          	ConvertToY8Regal(composition->fb_handle);
+-          	EinkCommit(composition->einkMode);
+-	   } else {
+-	       last_regal = !last_regal;
+-		InToOrOutY8Regal(composition->fb_handle);
+-          	EinkCommit(EPD_FORCE_FULL);
+-	   }
++          if (last_regal) {
++              ConvertToY8Regal(composition->fb_handle);
++              EinkCommit(composition->einkMode);
++          } else {
++              last_regal = !last_regal;
++              IntoY8Regal(composition->fb_handle);
++              Y4Commit(EPD_FORCE_FULL);
++          }
+           break;
+       }
+       FALLTHROUGH_INTENDED;
+-    #endif
+     default:
+-      ConvertToY4Dither(composition->fb_handle, composition->einkMode);
++	if (ebc_buf_format == EBC_Y4)
++          ConvertToY4Dither(composition->fb_handle, composition->einkMode);
++	else
++          ConvertToY8Dither(composition->fb_handle, composition->einkMode);
+       Y4Commit(composition->einkMode);
+       break;
+   }
+diff --git a/einkcompositorworker.h b/einkcompositorworker.h
+index 2b1ee81..d4ad935 100755
+--- a/einkcompositorworker.h
++++ b/einkcompositorworker.h
+@@ -67,7 +67,13 @@
+ 
+ namespace android {
+ 
+-#define EINK_FB_SIZE		0x400000 /* 4M */
++#define EINK_FB_SIZE		0x500000 /* 5M */
++
++/*
++* ebc buf format
++*/
++#define EBC_Y4 (0)
++#define EBC_Y8 (1)
+ 
+ /*
+  * IMPORTANT: Those values is corresponding to android hardware program,
+@@ -117,7 +123,7 @@ struct ebc_buf_info_t {
+ 	int win_y2;
+ 	int width_mm;
+ 	int height_mm;
+-	int needpic; // 1: buf can not be drop by ebc, 0: buf can drop by ebc
++	int needpic; // 1: buf can not be drop by ebc, 0: buf can drop by ebc, 2: regal buf, can not be drop by ebc
+ 	char tid_name[16];
+ };
+ 
+@@ -132,17 +138,24 @@ struct win_coordinate{
+ /*
+  * ebc system ioctl command
+  */
+-#define EBC_GET_BUFFER			(0x7000)
++#define EBC_GET_BUFFER				(0x7000)
+ #define EBC_SEND_BUFFER			(0x7001)
+ #define EBC_GET_BUFFER_INFO		(0x7002)
+ #define EBC_SET_FULL_MODE_NUM	(0x7003)
+ #define EBC_ENABLE_OVERLAY		(0x7004)
+ #define EBC_DISABLE_OVERLAY		(0x7005)
+-#define EBC_GET_OSD_BUFFER	(0x7006)
+-#define EBC_SEND_OSD_BUFFER	(0x7007)
+-#define EBC_NEW_BUF_PREPARE	(0x7008)
+-#define EBC_SET_DIFF_PERCENT	(0x7009)
+-#define EBC_WAIT_NEW_BUF_TIME (0x700a)
++#define EBC_GET_OSD_BUFFER		(0x7006)
++#define EBC_SEND_OSD_BUFFER		(0x7007)
++#define EBC_NEW_BUF_PREPARE		(0x7008)
++#define EBC_SET_DIFF_PERCENT		(0x7009)
++#define EBC_WAIT_NEW_BUF_TIME	(0x700a)
++#define EBC_GET_OVERLAY_STATUS	(0x700b)
++#define EBC_ENABLE_BG_CONTROL	(0x700c)
++#define EBC_DISABLE_BG_CONTROL	(0x700d)
++#define EBC_ENABLE_RESUME_COUNT	(0x700e)
++#define EBC_DISABLE_RESUME_COUNT	(0x700f)
++#define EBC_GET_BUF_FORMAT		(0x7010)
++#define EBC_DROP_PREV_BUFFER		(0x7011)
+ 
+ class EinkCompositorWorker : public Worker {
+  public:
+@@ -168,13 +181,15 @@ class EinkCompositorWorker : public Worker {
+   int CreateNextTimelineFence();
+   int FinishComposition(int timeline);
+   int Rgba888ToGray256ByRga(DrmRgaBuffer &rgaBuffer,const buffer_handle_t          &fb_handle);
++  int Rgba888ToGray256ByRga2(DrmRgaBuffer &rgaBuffer,const buffer_handle_t          &fb_handle, int epd_mode);
+   int Rgba8888ClipRgba(DrmRgaBuffer &rgaBuffer,const buffer_handle_t          &fb_handle);
+   int Rgba888ToGray16ByRga(int *output_buffer,const buffer_handle_t          &fb_handle, int epd_mode);
+   int RgaClipGrayRect(DrmRgaBuffer &rgaBuffer,const buffer_handle_t &fb_handle);
+   int ConvertToColorEink1(const buffer_handle_t &fb_handle);
+   int ConvertToColorEink2(const buffer_handle_t &fb_handle);
+-  int InToOrOutY8Regal(const buffer_handle_t &fb_handle);
++  int IntoY8Regal(const buffer_handle_t &fb_handle);
+   int ConvertToY8Regal(const buffer_handle_t &fb_handle);
++  int ConvertToY8Dither(const buffer_handle_t &fb_handle, int epd_mode);
+   int ConvertToY4Dither(const buffer_handle_t &fb_handle, int epd_mode);
+   int ConvertToY1Dither(const buffer_handle_t &fb_handle);
+   int ColorCommit(int epd_mode);
+@@ -210,6 +225,7 @@ class EinkCompositorWorker : public Worker {
+ 
+   int ebc_fd = -1;
+   void *ebc_buffer_base = NULL;
++  int ebc_buf_format = EBC_Y4;
+   int waveform_fd = -1;
+   void *waveform_base = NULL;
+   struct ebc_buf_info_t ebc_buf_info;
+@@ -222,8 +238,11 @@ class EinkCompositorWorker : public Worker {
+   int rgaBuffer_index = 0;
+   DrmRgaBuffer rgaBuffers[MaxRgaBuffers];
+   int *gray16_buffer = NULL;
+-  int *gray256_old_buffer = NULL;
+   int *gray256_new_buffer = NULL;
++
++  int *gray_cur_buffer = NULL;
++  int *gray_pre_buffer = NULL;
++
+   char* rga_output_addr = NULL;
+   bool rgba_to_y4_by_rga = false;
+   buffer_handle_t last_fb_handle = NULL;
+diff --git a/glworker.cpp b/glworker.cpp
+old mode 100644
+new mode 100755
+diff --git a/glworker.h b/glworker.h
+old mode 100644
+new mode 100755
+diff --git a/hwc_debug.h b/hwc_debug.h
+old mode 100644
+new mode 100755
+diff --git a/hwc_util.cpp b/hwc_util.cpp
+old mode 100644
+new mode 100755
+diff --git a/hwc_util.h b/hwc_util.h
+old mode 100644
+new mode 100755
+diff --git a/hwcomposer.cpp b/hwcomposer.cpp
+index 73c67ef..ba42a3b 100755
+--- a/hwcomposer.cpp
++++ b/hwcomposer.cpp
+@@ -109,7 +109,13 @@
+ namespace android {
+ #ifndef ANDROID_EINK_COMPOSITOR_WORKER_H_
+ 
+-#define EINK_FB_SIZE        0x400000 /* 4M */
++#define EINK_FB_SIZE        0x500000 /* 5M */
++
++/*
++* ebc buf format
++*/
++#define EBC_Y4 (0)
++#define EBC_Y8 (1)
+ 
+ /*
+  * IMPORTANT: Those values is corresponding to android hardware program,
+@@ -159,7 +165,7 @@ struct ebc_buf_info {
+     int win_y2;
+     int width_mm;
+     int height_mm;
+-    int needpic; // 1: buf can not be drop by ebc, 0: buf can drop by ebc
++    int needpic; // 1: buf can not be drop by ebc, 0: buf can drop by ebc 2: regal buf, can not be drop by ebc
+     char tid_name[16];
+ };
+ 
+@@ -175,24 +181,31 @@ struct win_coordinate{
+ /*
+  * ebc system ioctl command
+  */
+-#define EBC_GET_BUFFER            (0x7000)
+-#define EBC_SEND_BUFFER            (0x7001)
+-#define EBC_GET_BUFFER_INFO        (0x7002)
+-#define EBC_SET_FULL_MODE_NUM    (0x7003)
+-#define EBC_ENABLE_OVERLAY        (0x7004)
+-#define EBC_DISABLE_OVERLAY        (0x7005)
+-#define EBC_GET_OSD_BUFFER     (0x7006)
+-#define EBC_SEND_OSD_BUFFER    (0x7007)
+-#define EBC_NEW_BUF_PREPARE    (0x7008)
+-#define EBC_SET_DIFF_PERCENT   (0x7009)
+-#define EBC_WAIT_NEW_BUF_TIME (0x700a)
++#define EBC_GET_BUFFER				(0x7000)
++#define EBC_SEND_BUFFER			(0x7001)
++#define EBC_GET_BUFFER_INFO		(0x7002)
++#define EBC_SET_FULL_MODE_NUM	(0x7003)
++#define EBC_ENABLE_OVERLAY		(0x7004)
++#define EBC_DISABLE_OVERLAY		(0x7005)
++#define EBC_GET_OSD_BUFFER		(0x7006)
++#define EBC_SEND_OSD_BUFFER		(0x7007)
++#define EBC_NEW_BUF_PREPARE		(0x7008)
++#define EBC_SET_DIFF_PERCENT		(0x7009)
++#define EBC_WAIT_NEW_BUF_TIME	(0x700a)
++#define EBC_GET_OVERLAY_STATUS	(0x700b)
++#define EBC_ENABLE_BG_CONTROL	(0x700c)
++#define EBC_DISABLE_BG_CONTROL	(0x700d)
++#define EBC_ENABLE_RESUME_COUNT	(0x700e)
++#define EBC_DISABLE_RESUME_COUNT	(0x700f)
++#define EBC_GET_BUF_FORMAT		(0x7010)
++#define EBC_DROP_PREV_BUFFER		(0x7011)
+ #endif
+ 
+-#define POWEROFF_IMAGE_PATH_USER "/data/local/iflytek/wallpaper/poweroff.png"
+-#define POWEROFF_NOPOWER_IMAGE_PATH_USER "/data/local/iflytek/wallpaper/poweroff_nopower.png"
+-#define STANDBY_IMAGE_PATH_USER "/data/local/iflytek/wallpaper/standby.png"
+-#define STANDBY_LOWPOWER_PATH_USER "/data/local/iflytek/wallpaper/standby_lowpower.png"
+-#define STANDBY_CHARGE_PATH_USER "/data/local/iflytek/wallpaper/standby_charge.png"
++#define POWEROFF_IMAGE_PATH_USER "/data/misc/poweroff.png"
++#define POWEROFF_NOPOWER_IMAGE_PATH_USER "/data/misc/poweroff_nopower.png"
++#define STANDBY_IMAGE_PATH_USER "/data/misc/standby.png"
++#define STANDBY_LOWPOWER_PATH_USER "/data/misc/standby_lowpower.png"
++#define STANDBY_CHARGE_PATH_USER "/data/misc/standby_charge.png"
+ 
+ #define POWEROFF_IMAGE_PATH_DEFAULT "/vendor/media/poweroff.png"
+ #define POWEROFF_NOPOWER_IMAGE_PATH_DEFAULT "/vendor/media/poweroff_nopower.png"
+@@ -206,7 +219,7 @@ int gPixel_format = 24;
+ int ebc_fd = -1;
+ void *ebc_buffer_base = NULL;
+ struct ebc_buf_info_t ebc_buf_info;
+-
++int ebc_buf_format = EBC_Y4;
+ static int gLastEpdMode = EPD_PART_GC16;
+ static int gCurrentEpdMode = EPD_PART_GC16;
+ static int gOneFullModeTime = 0;
+@@ -605,6 +618,197 @@ void Luma8bit_to_4bit_row_16(int  *src,  int *dst, short int *res0,  short int*r
+ 
+ }
+ 
++void Luma8bit_to_8bit_row_16(int  *src,  int *dst, short int *res0,  short int*res1, int w)
++{
++    int i;
++    int g0, g1, g2,g3,g4,g5,g6,g7,g_temp;
++    int e;
++    int v0, v1, v2, v3;
++    int src_data;
++    int src_temp_data;
++    v0 = 0;
++    for(i=0; i<w; i+=8)
++    {
++
++        src_data =  *src++;
++        src_temp_data = src_data&0xff;
++        g_temp = src_temp_data + res0[i] + v0;
++        res0[i] = 0;
++        g_temp = CLIP(g_temp);
++        g0 = g_temp & 0xf0;
++        e = g_temp - g0;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++
++        if( i==0 )
++        {
++            res1[i] += v2;
++            res1[i+1] += v3;
++        }
++        else
++        {
++            res1[i-1] += v1;
++            res1[i]   += v2;
++            res1[i+1] += v3;
++        }
++
++
++
++        src_temp_data = ((src_data&0x0000ff00)>>8);
++        g_temp = src_temp_data + res0[i+1] + v0;
++        res0[i+1] = 0;
++        g_temp = CLIP(g_temp);
++        g1 = g_temp & 0xf0;
++        e = g_temp - g1;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        res1[i]     += v1;
++        res1[i+1]   += v2;
++        res1[i+2]   += v3;
++
++
++
++
++        src_temp_data = ((src_data&0x00ff0000)>>16);
++        g_temp = src_temp_data + res0[i+2] + v0;
++        res0[i+2] = 0;
++        g_temp = CLIP(g_temp);
++        g2 = g_temp & 0xf0;
++        e = g_temp - g2;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        res1[i+1]     += v1;
++        res1[i+2]   += v2;
++        res1[i+3]   += v3;
++
++
++        src_temp_data = ((src_data&0xff000000)>>24);
++        g_temp = src_temp_data + res0[i+3] + v0;
++        res0[i+3] = 0;
++        g_temp = CLIP(g_temp);
++        g3 = g_temp & 0xf0;
++        e = g_temp - g3;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        res1[i+2]     += v1;
++        res1[i+3]   += v2;
++        res1[i+4]   += v3;
++
++       *dst++ = (g3<<24)|(g2<<16)|(g1<<8)|g0;
++
++        src_data =  *src++;
++        src_temp_data = src_data&0xff;
++        g_temp = src_temp_data + res0[i+4] + v0;
++        res0[i+4] = 0;
++        g_temp = CLIP(g_temp);
++        g4 = g_temp & 0xf0;
++        e = g_temp - g4;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++
++        {
++            res1[i+3] += v1;
++            res1[i+4]   += v2;
++            res1[i+5] += v3;
++        }
++
++
++
++        src_temp_data = ((src_data&0x0000ff00)>>8);
++        g_temp = src_temp_data + res0[i+5] + v0;
++        res0[i+5] = 0;
++        g_temp = CLIP(g_temp);
++        g5 = g_temp & 0xf0;
++        e = g_temp - g5;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        res1[i+4]     += v1;
++        res1[i+5]   += v2;
++        res1[i+6]   += v3;
++
++
++
++
++        src_temp_data = ((src_data&0x00ff0000)>>16);
++        g_temp = src_temp_data + res0[i+6] + v0;
++        res0[i+6] = 0;
++        g_temp = CLIP(g_temp);
++        g6 = g_temp & 0xf0;
++        e = g_temp - g6;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        res1[i+5]     += v1;
++        res1[i+6]   += v2;
++        res1[i+7]   += v3;
++
++
++
++
++        src_temp_data = ((src_data&0xff000000)>>24);
++        g_temp = src_temp_data + res0[i+7] + v0;
++        res0[i+7] = 0;
++        g_temp = CLIP(g_temp);
++        g7 = g_temp & 0xf0;
++        e = g_temp - g7;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        if (i == w-8)
++        {
++            res1[i+6] += v1;
++            res1[i+7] += v2;
++        }
++        else
++        {
++            res1[i+6]     += v1;
++            res1[i+7]   += v2;
++            res1[i+8]   += v3;
++        }
++
++        *dst++ =(g7<<24)|(g6<<16)|(g5<<8)|g4;
++    }
++
++}
++
++int gray256_to_gray16_dither_y8(char *gray256_addr,char *gray16_buffer,int  panel_h, int panel_w,int vir_width){
++
++  ATRACE_CALL();
++
++  UN_USED(vir_width);
++  int h;
++  int w;
++  short int *line_buffer[2];
++  char *src_buffer;
++  line_buffer[0] =(short int *) malloc(panel_w*2);
++  line_buffer[1] =(short int *) malloc(panel_w*2);
++  memset(line_buffer[0],0,panel_w*2);
++  memset(line_buffer[1],0,panel_w*2);
++
++  for(h = 0;h<panel_h;h++){
++      Luma8bit_to_8bit_row_16((int*)gray256_addr,(int *)gray16_buffer,line_buffer[h&1],line_buffer[!(h&1)],panel_w);
++      gray16_buffer = (char *)(gray16_buffer+panel_w);
++      gray256_addr = (char *)(gray256_addr+panel_w);
++  }
++  free(line_buffer[0]);
++  free(line_buffer[1]);
++
++  return 0;
++}
+ 
+ int gray256_to_gray16_dither(char *gray256_addr,int *gray16_buffer,int  panel_h, int panel_w,int vir_width){
+ 
+@@ -779,6 +983,75 @@ void Luma8bit_to_4bit_row_2(short int  *src,  char *dst, short int *res0,  short
+ 
+ }
+ 
++void Luma8bit_to_8bit_row_2(short int  *src,  short int *dst, short int *res0,  short int*res1, int w,int threshold)
++{
++    int i;
++    int g0, g1, g2,g3,g4,g5,g6,g7,g_temp;
++    int e;
++    int v0, v1, v2, v3;
++    int src_data;
++    int src_temp_data;
++    v0 = 0;
++    for(i=0; i<w; i+=2)
++    {
++
++        src_data =  *src++;
++        src_temp_data = src_data&0xff;
++        g_temp = src_temp_data + res0[i] + v0;
++        res0[i] = 0;
++        g_temp = CLIP(g_temp);
++        if(g_temp >= threshold)
++            g0 = 0xf0;
++        else
++            g0 = 0x00;
++        e = g_temp - g0;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        if(g_temp >= threshold)
++            g0 = 0xf0;
++        else
++            g0 = 0x00;
++        if( i==0 )
++        {
++            res1[i] += v2;
++            res1[i+1] += v3;
++        }
++        else
++        {
++            res1[i-1] += v1;
++            res1[i]   += v2;
++            res1[i+1] += v3;
++        }
++
++        src_temp_data = ((src_data&0x0000ff00)>>8);
++        g_temp = src_temp_data + res0[i+1] + v0;
++        res0[i+1] = 0;
++        g_temp = CLIP(g_temp);
++        if(g_temp >= threshold)
++            g1 = 0xf0;
++        else
++            g1 = 0x00;
++        e = g_temp - g1;
++        v0 = (e * 7) >> 4;
++        v1 = (e * 3) >> 4;
++        v2 = (e * 5) >> 4;
++        v3 = (e * 1) >> 4;
++        if(g_temp >= threshold)
++            g1 = 0xf000;
++        else
++            g1 = 0x00;
++        res1[i]     += v1;
++        res1[i+1]   += v2;
++        res1[i+2]   += v3;
++
++        *dst++ =g1|g0;
++    }
++
++}
++
++
+ void Luma8bit_to_4bit(unsigned int *graynew,unsigned int *gray8bit,int  vir_height, int vir_width,int panel_w)
+ {
+     ATRACE_CALL();
+@@ -896,6 +1169,47 @@ int gray256_to_gray2_dither(char *gray256_addr,char *gray2_buffer,int  panel_h,
+   return 0;
+ }
+ 
++int gray256_to_gray2_dither_y8(char *gray256_addr,char *gray2_buffer,int  panel_h, int panel_w,int vir_width,Region region){
++
++    ATRACE_CALL();
++
++    //do dither
++    short int *line_buffer[2];
++    line_buffer[0] =(short int *) malloc(panel_w << 1);
++    line_buffer[1] =(short int *) malloc(panel_w << 1);
++
++    size_t count = 0;
++    const Rect* rects = region.getArray(&count);
++    for (size_t i = 0;i < (int)count;i++) {
++        memset(line_buffer[0], 0, panel_w << 1);
++        memset(line_buffer[1], 0, panel_w << 1);
++
++        int w = rects[i].right - rects[i].left;
++        int offset = rects[i].top * panel_w + rects[i].left;
++        int offset_dst = rects[i].top * vir_width + rects[i].left;
++        if (offset_dst % 2) {
++            offset_dst += (2 - offset_dst % 2);
++        }
++        if (offset % 2) {
++            offset += (2 - offset % 2);
++        }
++        if ((offset_dst + w) % 2) {
++            w -= (offset_dst + w) % 2;
++        }
++        for (int h = rects[i].top;h <= rects[i].bottom && h < panel_h;h++) {
++            //ALOGD("DEBUG_lb Luma8bit_to_4bit_row_2, w:%d, offset:%d, offset_dst:%d", w, offset, offset_dst);
++            Luma8bit_to_8bit_row_2((short int*)(gray256_addr + offset), (short int*)(gray2_buffer + offset_dst),
++                    line_buffer[h&1], line_buffer[!(h&1)], w, 0x80);
++            offset += panel_w;
++            offset_dst += vir_width;
++        }
++    }
++
++    free(line_buffer[0]);
++    free(line_buffer[1]);
++  return 0;
++}
++
+ /*for eink color panel, rgb888*/
+ void Rgb888_to_color_eink(char *dst,int *src,int  fb_height, int fb_width,int vir_width)
+ {
+@@ -1755,7 +2069,7 @@ void Rgb888_to_color_eink2(char *dst, int *src, int fb_height, int fb_width, int
+ 		src_r1 = src;
+ 		src_r2 = src + vir_width;
+ 		int row_mod3 = i % 3;
+-		if (row_mod3 == 1) {
++		if (row_mod3 == 0) {
+ 			for (j = 0; j < w_div6; j++) {
+ 				RGB888_AVG_RGB(src_r1, src_r2, r, g, b);
+ 				*dst_r1++ = r | (b<<4);
+@@ -1767,7 +2081,7 @@ void Rgb888_to_color_eink2(char *dst, int *src, int fb_height, int fb_width, int
+ 				*dst_r1++ = b | (g<<4);
+ 				*dst_r2++ = r | (b<<4);
+ 			}
+-		} else if (row_mod3 == 2) {
++		} else if (row_mod3 == 1) {
+ 			for (j = 0; j < w_div6; j++) {
+ 				RGB888_AVG_RGB(src_r1, src_r2, r, g, b);
+ 				*dst_r1++ = b | (g<<4);
+@@ -1779,7 +2093,7 @@ void Rgb888_to_color_eink2(char *dst, int *src, int fb_height, int fb_width, int
+ 				*dst_r1++ = g | (r<<4);
+ 				*dst_r2++ = b | (g<<4);
+ 			}
+-		} else if (row_mod3 == 0) {
++		} else if (row_mod3 == 2) {
+ 			for (j = 0; j < w_div6; j++) {
+ 				RGB888_AVG_RGB(src_r1, src_r2, r, g, b);
+ 				*dst_r1++ = g | (r<<4);
+@@ -2108,7 +2422,10 @@ int hwc_post_epd(int *buffer, Rect rect, int mode){
+           ALOGW("Could not open %s\n",data_name);
+       } else{
+           ALOGW("open %s and write ok\n",data_name);
+-          fwrite(buffer, buf_info.height * buf_info.width >> 1 , 1, file);
++          if (ebc_buf_format == EBC_Y4)
++              fwrite(buffer, buf_info.height * buf_info.width >> 1 , 1, file);
++          else
++		 fwrite(buffer, buf_info.height * buf_info.width , 1, file);
+           fclose(file);
+ 
+       }
+@@ -2121,9 +2438,12 @@ int hwc_post_epd(int *buffer, Rect rect, int mode){
+   ALOGD_IF(log_level(DBG_DEBUG),"%s, line = %d ,mode = %d, (x1,x2,y1,y2) = (%d,%d,%d,%d) ",__FUNCTION__,__LINE__,
+       mode,buf_info.win_x1,buf_info.win_x2,buf_info.win_y1,buf_info.win_y2);
+   unsigned long vaddr_real = intptr_t(ebc_buffer_base);
+-  memcpy((void *)(vaddr_real + buf_info.offset), buffer,
+-          buf_info.height * buf_info.width >> 1);
+-
++  if (ebc_buf_format == EBC_Y4)
++      memcpy((void *)(vaddr_real + buf_info.offset), buffer,
++              buf_info.height * buf_info.width >> 1);
++  else
++      memcpy((void *)(vaddr_real + buf_info.offset), buffer,
++              buf_info.height * buf_info.width);
+   if(ioctl(ebc_fd, EBC_SEND_BUFFER,&buf_info)!=0)
+   {
+      ALOGE("EBC_SEND_BUFFER failed\n");
+@@ -2189,27 +2509,11 @@ void drawLogoPic(const char src_path[], void* buf, int width, int height)
+     SkCanvas canvas(dst);
+     canvas.drawColor(SK_ColorWHITE);
+ 
+-    /* WISKY BEGIN */
+-    // author: dinghuimin    date: 2022/01/12 17:48:06
+-    // descrpition: logo rotate 90掳
+-    /* original code:
+     if (width > bitmap.width())
+         x = (width - bitmap.width()) / 2;
+ 
+     if (height > bitmap.height())
+-        y = (height - bitmap.height()) / 2; */
+-    canvas.translate(width, 0);
+-    canvas.rotate(90.0f);
+-
+-    if (width > bitmap.height())
+-        x = (width - bitmap.height()) / 2;
+-
+-    if (height > bitmap.width())
+-        y = (height - bitmap.width()) / 2;
+-
+-    ALOGD("drawLogoPic # path:%s,[%d,%d][%d,%d][%d,%d]", src_path, width,
+-          height, bitmap.width(), bitmap.height(), x, y);
+-    /* WISKY END */
++        y = (height - bitmap.height()) / 2;
+ 
+     canvas.drawBitmap(bitmap, x, y, NULL);
+ }
+@@ -2256,6 +2560,75 @@ int Rgb888ToGray16ByRga(char *dst_buf,int *src_buf,int  fb_height, int fb_width,
+     return ret;
+ }
+ 
++void do_gray256_buffer(uint32_t *buffer_in, uint32_t *buffer_out, int width, int height)
++{
++	uint32_t src_data;
++	uint32_t *src = buffer_in;
++	uint32_t *dst = buffer_out;
++
++	for(int i = 0; i < height; i++) {
++		for(int j = 0; j< width/4; j++) {
++			src_data = *src++;
++			src_data &= 0xf0f0f0f0;
++			*dst++ = src_data;
++		}
++	}
++}
++
++void  change_4bit_to_8bit(unsigned char *in_buffer, unsigned char *out_buffer, int size)
++{
++	int i;
++	unsigned char buffer_in;
++
++	for (i = 0; i < size; i++) {
++		buffer_in = *in_buffer++;
++		*out_buffer++ = (buffer_in & 0x0f) << 4;
++		*out_buffer++ = (buffer_in & 0xf0);
++	}
++}
++
++int Rgb888ToGray256ByRga(char *dst_buf,int *src_buf,int  fb_height, int fb_width, int vir_width) {
++    int ret = 0;
++    rga_info_t src;
++    rga_info_t dst;
++
++    RockchipRga& rkRga(RockchipRga::get());
++
++    memset(&src, 0x00, sizeof(src));
++    memset(&dst, 0x00, sizeof(dst));
++
++    src.sync_mode = RGA_BLIT_SYNC;
++    rga_set_rect(&src.rect, 0, 0, fb_width, fb_height, vir_width, fb_height, RK_FORMAT_RGBA_8888);
++    rga_set_rect(&dst.rect, 0, 0, fb_width, fb_height, vir_width, fb_height, HAL_PIXEL_FORMAT_YCrCb_NV12);
++
++    ALOGD_IF(log_level(DBG_INFO),"RK_RGA_PREPARE_SYNC rgaRotateScale  : src[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x],dst[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x]",
++        src.rect.xoffset, src.rect.yoffset, src.rect.width, src.rect.height, src.rect.wstride, src.rect.hstride, src.rect.format,
++        dst.rect.xoffset, dst.rect.yoffset, dst.rect.width, dst.rect.height, dst.rect.wstride, dst.rect.hstride, dst.rect.format);
++
++    //src.hnd = fb_handle;
++    src.virAddr = src_buf;
++    dst.virAddr = dst_buf;
++    dst.mmuFlag = 1;
++    src.mmuFlag = 1;
++    src.rotation = 0;
++    dst.dither.enable = 0;
++    dst.dither.mode = 0;
++    dst.color_space_mode = 0x1 << 2;
++
++    dst.dither.lut0_l = 0x0000;
++    dst.dither.lut0_h = 0x0000;
++    dst.dither.lut1_l = 0x0000;
++    dst.dither.lut1_h = 0x0000;
++    ret = rkRga.RkRgaBlit(&src, &dst, NULL);
++    if(ret) {
++        ALOGE("rgaRotateScale error : src[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x],dst[x=%d,y=%d,w=%d,h=%d,ws=%d,hs=%d,format=0x%x]",
++            src.rect.xoffset, src.rect.yoffset, src.rect.width, src.rect.height, src.rect.wstride, src.rect.hstride, src.rect.format,
++            dst.rect.xoffset, dst.rect.yoffset, dst.rect.width, dst.rect.height, dst.rect.wstride, dst.rect.hstride, dst.rect.format);
++    }
++    do_gray256_buffer((uint32_t *)dst_buf, (uint32_t *)dst_buf, fb_width, fb_height);
++    return ret;
++}
++
+ int hwc_post_epd_logo(const char src_path[]) {
+     int *gray16_buffer;
+     void *image_addr;
+@@ -2278,26 +2651,40 @@ int hwc_post_epd_logo(const char src_path[]) {
+         drawLogoPic(src_path, (void *)image_addr, ebc_buf_info.width, ebc_buf_info.height);
+     }
+ 
+-    gray16_buffer = (int *)malloc(ebc_buf_info.width * ebc_buf_info.height >> 1);
++    if (ebc_buf_format == EBC_Y4)
++        gray16_buffer = (int *)malloc(ebc_buf_info.width * ebc_buf_info.height >> 1);
++    else
++        gray16_buffer = (int *)malloc(ebc_buf_info.width * ebc_buf_info.height);
+     int *gray16_buffer_bak = gray16_buffer;
+     char isNeedWhiteScreenWithStandby[PROPERTY_VALUE_MAX] = "n";
+     /* add white screen before power-off picture, reduce shadow, open by property [ro.need.white.with.standby] */
+     property_get("ro.need.white.with.standby", isNeedWhiteScreenWithStandby, "n");
+     if (strcmp(isNeedWhiteScreenWithStandby, "y") == 0) {
+-        memset(gray16_buffer_bak, 0xff, ebc_buf_info.width * ebc_buf_info.height >> 1);
++        if (ebc_buf_format == EBC_Y4)
++            memset(gray16_buffer_bak, 0xff, ebc_buf_info.width * ebc_buf_info.height >> 1);
++	 else
++            memset(gray16_buffer_bak, 0xf0, ebc_buf_info.width * ebc_buf_info.height);
+         ALOGD_IF(log_level(DBG_DEBUG), "%s,line = %d", __FUNCTION__, __LINE__);
+         //EPD post
+         Rect rect(0, 0, ebc_buf_info.width, ebc_buf_info.height);
+         hwc_post_epd(gray16_buffer_bak, rect, EPD_PART_GC16);
+     }
+ 
+-    if (ebc_buf_info.panel_color == 1)
+-        logo_gray256_to_gray16((char *)image_addr, (char *)gray16_buffer, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
+-    else if (ebc_buf_info.panel_color == 2)
+-        Rgb888_to_color_eink2((char *)gray16_buffer, (int *)image_addr, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
+-    else
+-        Rgb888ToGray16ByRga((char *)gray16_buffer, (int *)image_addr, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
+-
++    if (ebc_buf_format == EBC_Y4) {
++        if (ebc_buf_info.panel_color == 1)
++            logo_gray256_to_gray16((char *)image_addr, (char *)gray16_buffer, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
++        else if (ebc_buf_info.panel_color == 2)
++            Rgb888_to_color_eink2((char *)gray16_buffer, (int *)image_addr, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
++        else
++            Rgb888ToGray16ByRga((char *)gray16_buffer, (int *)image_addr, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
++    } else {
++        if (ebc_buf_info.panel_color == 1)
++            do_gray256_buffer((uint32_t *)image_addr, (uint32_t *)gray16_buffer, ebc_buf_info.width, ebc_buf_info.height);
++        else if (ebc_buf_info.panel_color == 2)
++            Rgb888_to_color_eink2((char *)gray16_buffer, (int *)image_addr, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
++        else
++            Rgb888ToGray256ByRga((char *)gray16_buffer, (int *)image_addr, ebc_buf_info.height, ebc_buf_info.width, ebc_buf_info.width);
++    }
+     //EPD post
+     gCurrentEpdMode = EPD_SUSPEND;
+     Rect rect(0, 0, ebc_buf_info.width, ebc_buf_info.height);
+@@ -2777,6 +3164,11 @@ static int hwc_device_open(const struct hw_module_t *module, const char *name,
+       close(ebc_fd);
+       return -1;
+   }
++  if(ioctl(ebc_fd, EBC_GET_BUF_FORMAT, &ebc_buf_format)!=0){
++      ALOGE("EBC_GET_BUF_FORMAT failed\n");
++      close(ebc_fd);
++      return -1;
++  }
+   ebc_buffer_base = mmap(0, EINK_FB_SIZE*4, PROT_READ|PROT_WRITE, MAP_SHARED, ebc_fd, 0);
+   if (ebc_buffer_base == MAP_FAILED) {
+       ALOGE("Error mapping the ebc buffer (%s)\n", strerror(errno));
+diff --git a/libregal/lib/libeink.so b/libregal/lib/libeink.so
+index 24f3b4dcc82b44421606ae2bbae462522108baf1..637ef0de0173d8e1c90aa6c9d227430cfc6f10ab 100755
+GIT binary patch
+delta 2946
+zcmWO8c|26z9|!O|jC~zp#+EE&Uj}2#QbQpgOZJ_RG1l}v_GKuk><rnL9{ZAQqGXWm
+z3E7FPKSUwQ5>n!K{&>I6=lePLp4a{Fo*#v<y+T;p71&C;kS-0o3IwsI6AsxudI@aL
+zzV~_$CoOOV#=m+-_JzgJ!u1Z8u9NrZgsItVU0i-89iqArdWQU@Jq$^RiH|Lfjd_o#
+zi|S(3yA3*9vJulN0@1?-K?RBsbOWqz+z><{X$hnvM8R~f06`U;5QGBxJ$Xq$6^2;5
+z1VI!G1bKiJ2DYA((Sl4=h~Efsh8#Eptos0ggcEY$z<`7S?GQTz9RL^X<a(h|Dnt?+
+z1er)f&@l@H*@NssN*47&u!1x$1wo;pl?M4Ui2+@Uc)|)noS>yJLr?_BQlx%#G2$b5
+z#zPW<m_d62ayU6iOq>cfNiLKi!z7&;At)XVL2~pEBnz@T0|c3iL68f`WuX5H^hO}Z
+zlEb7HsA=(FJB5y9EoUv&P6t7qKsV3_yaR@S5nvpc0`|b$lXRpRIcwqt7^%QW1JDCZ
+z04sn1H~}QU3kU<EfEXYN$N=(yBA^VY0UCfdfCFv-#lRjo-xYivv{JHqAy~AD9WUC@
+zTq)YPd?CMjg(;2PAfFC{y(Zxlkgz(Eox&ltrI|JPwqi9k`ApfBo^(Y8PIlCmpn?gI
+z9$i-?vXB_#vu^e1lURFt^Si#+(Q>L_-%rsx`-GX)XBQPOIWz};sf?f{8pQo?BmJh_
+zgH?|l;}|*ad!gHlrOk`&err-%StE;n5|z!_{Otx|*DSid@4oXCK*m8z86gtg1{x=I
+zZ;px`Oue%P(~5tDRHn4Q#8`Fu9|e`|?uZzA5HV@`!AX6-QD00JUNXZpSzVo6Pe{u`
+ztr_(bsyORtH#!B3ytHi0az9qsKw$)l6py8;`CCb9j{jcy_yhg`Lg=;l`gX$s?C><}
+z??3J=1oKh%R;TUy!^=))zlC>X?z!m~OS5T&e<TePIQ2T-9;lS{r9>yJyhY?_J(w0A
+zBwnSq9xm3l-%F^>_IXj1`Jun9Dl=Jyy_5f>VO>E>3XN+rJdI#3d;6KW<5;b~Zzx|6
+z#h5#OVm^?`84`N_ctCIZX3J9vMWe`q{$kWd9GbJD*L64xYqT#eaEB%$D*WDwi_*X+
+zr=q233MwFKng5RC`^1u+Pc<E{=dY?`tcV4&l)yvCj5Wn;Gg`<>HMTO><*kb3`q8U4
+zI`~$9Era~TWRBg-)8ar}4YN~lCs*C}84qt!$e83mCW(X0)FS(VukvqVuW|@^&~TD+
+zYxH7b8q(8^`<LW+%ym~U<v$8R!BgN43uZ#I&G9y}g!8?_tcS6O!|av`arV*S8$>Z$
+z8qpEzS08&+i;O49&S~#_V|VR)*zu!tw{B6cnORAO4c!cg6J4aC%x5$X_8h+!MBPv~
+z%u;T7`@ES`Se28<unCuWVv!b9o3d;D?O5IYltv5rq;vU<gSUq2>f($H*H_Z{i@b^^
+z{DruQtfSh+SHWXP-_fCkKF3_Vi7hcVp)PTHwjXY3)H3y`QK4R5Z2JRW+&4JP^o^pR
+z3DfQ#qn~F>;<h4o_1s0HV%}2j60?-3F!kPngZ9xlF1=NBLZtdml8r%Rsr~w9(sy;`
+zoXLmzfq~wW>2~YknAbtUnlZhe3o53P&hLA88+m@*R#$5^jpMf3E9keKYdRppz3EhV
+z3fPMCCi!rEXzYJu&$}ibax^@m>{uM5f*1NeS3@ZketW^_KP!PEbDm)n^u4j#)6n>u
+za^U%lNb<41vNyLw$!RH4EY&mfAJ-r)-+A4UL~~UPZPVA5G!>Gh<FBH}?K(eBg{5^w
+zht2+-^O)*c<Mt6`H}+JW^*|Bn_M}v>x?%rh%m!zbC_LFbs%p^mG_mmL@90V>?a_YE
+z;kyaHLqBySlDqiyz$>0sV!@vxl(ylT#8{!xvdi&IhH6NVPL`(1=$j-5kvPhITc99w
+zZpC_IDNk)*iJ7}0qN_65T6RZySjE<~LrY-FQv(^wp(>l7mD@%7;x<DZ*FJ(va66zs
+zYGJDUPot1$l1k?O2#nRadB^w=4{c$%<uBXOp#N#zW_MVXkGTHRJhNnt-lk1?rplu5
+z!40BG`iC;~=skXA@sj<@-$R0$8@80Oa`+*iU7?W1x|aYk+N!PgI^8E&X=K={*Lju3
+zl^0&`<`X=$3^SkLQ%w(v-g!;1`!sH^IN*_PgO|@cM@`L3;%p*s32<*VHzeb3a;<0F
+za&3PV=i)x>dSFVu{qSAbiS{SUQrY!=^lLVq>0$cJa=hw-z%SW6!c3o=;k8+TD{fBN
+z8dDa=*vB3%t=~gv>$(aXV&mJ|0vVbj*7UaWwY|~<6gBRLw>Pzw5_!~5<$|)+yz8Gj
+z&cTZq68#<DpjBD6yzMF@T9*@fHS;UoV%1p7U(n|U*PuuosMvm)(0>~zTjWj5a9xPP
+z-yEYdG}XO5BaJ8QZ<#sr@SlZ^_DjR9&+zB$|GYj7ReikY-l)9NDm$wj>3%<j_X#{#
+zoen{&>0dnSuRgcjCguq0|IEgy?S`Pj#LKk>pEI-_kHToK>DKb}ZBS&u@6=Tlz5Hv#
+zvZeXmJVPDB+=PL%#I|I|Q9^;yih)I%q0fz>eBRH6E_z?8kylTj(+QZ1MMU(drr+)P
+z9im#ZWMe<KMs=#lE7KMb667~fn3I*Qb16+*h?BK1p;>O)hIqZjK}zGHJuLd?g1*NK
+zJM-Ok4DYh!=C?*IVvk;IA9W1QpWnh6!Sq3{xf|bkafeCte3WoUr>j4SPKOiW^MbPd
+zlTlJS=$X|Imlok+i;nEA#k(G@Un%l)>%O5Cr$Qvn)8jy_&Lm%FBkm@*J%7e|Z|<|M
+zna#N;^E%h&-H1hzSDOgI7t;MZcl|Pjl-n!CJ}!F=on_Qk^=YYWF_sYTK70-*?BM+n
+z^B=V3aGa8-`A69y%w7CcHVY76Qb5M~H#fF1(YUQHPN!u1ND6YRJvUi7Rqpl`ma#5}
+zyP}=pe9rKZVTnsqV|`2Bzp7a*YYJ@?-RE_<e!G1)M-fv*$X0)jF0ekLNQ1QcMYT=?
+z!Y8L<=t7;gnO|@}<cwnhi|(HNc#k>kd9oQk8~tzh^)KbwaLT$jk8m&VYRnQN-yc-*
+zGT}VQcD<xK)t_^6WV|z>m@PYZjO72{ADXa~fXO)8^drB(kqAR(tD#U$CT#2d$1nLu
+zDj2(|9Etu8&C!?FvKkCtwD3F5!j~WX^wLg@K3-DGd0J%pW=vSQpfPYPypK?awy~?m
+z`aHg-l-N=hg^w!Uly<&Hy-?{wwN~T6k~%QRHb-N-Th!W!95>of*)~hM>_Cm7xb>J?
+zmR+KqU=~1Clr!q$W*(QR4Zgf8*0(j%=JJMAWk&oO6)zUCN{tWnVR$tf#3hh=>|^mk
+z`t+oDG0)jePA~O%2vb$m+`{@v@0jTbf$R}>SX|gi@rJ87O%>{|MF%W3(Bg*J3)lC>
+zK4o}MEgqUqApXW&qI}`%)G#s|j$_F%m9S|!`^yw>A-A0W&TqKQUMcS`YB*Botl473
+zYMYolMSWX8Z8V~22J0w(`ETF-L3~yD!yztqOgSB6!@ytonC;l_o<GIeWlq}+Zia7V
+zJeg_JZzvD4^$S<>`=P*xDaZ-Ee|(Yp@&T9YH_fQzXf);iVO$577~w!Sb@@<Z41Xvn
+zD_w5B?xN(|9Ur}T!1aq~dWozZW%r&9Tvd_a9wmctkgCrX&4yrY997!jR$7~<Lw<Y9
+iiyBr-k~9{i`Kb&+Kgq_%J}{Uosm(+LHb7c3LH-~57z`5t
+
+delta 2963
+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
+
+diff --git a/libregal/lib64/libeink.so b/libregal/lib64/libeink.so
+index c9b01159eb970def8541bd94616aaff48bf6dc92..6408c90560e40471512bde8388f7343ccf438fdd 100755
+GIT binary patch
+delta 954
+zcmbOcG9zTd3{D>z1~BlMxNyH92b2S+Cl@kq7dUCzb22q`xl7TfJmUjTH?5nzkWpfD
+z0Fwd>^Mctun~T}>nE4JY3#w=I`N%DsG3gC^%;fc)vP`_3lh1L=Gv3_%j#EvLIV2!#
+zvb?k+qs3%LX>mp!ASul11GHFSa-p=iq{o~8|JN`=90DRmfVc*T?@V3@R2?ySr?fuf
+zoyjkyjSVwi{r|7=|Ns9IAngF88-R2KkUsGG|NjCYo%8np{|+F{@b3Tr1weYsW?z|P
+z#)%U+HgAxf!o;|8va5n=ebjp2ZJW3J*ZE(<8}LZ|?m1ibP1m;UGhDp-vi_8Xr;gp`
+z)%_LX{Hj#fO6g(v?o&+Vr#G0~R7$jN|9xnF^r>d8wR|@UcX^fCp03^?XmITQiWv=}
+z6aM#4_shM$^Kak%O|x$mF-S;0@P86;=!eV|pC=Z#4y4~m3fmi|Uw?Fgp?^SD{V9oW
+zx7`$6Ke#<e{qXu*9slF^o#{Im|4c2gTHuwDyOrx-^ru}PS>JjZJxbg7dS#X4rjVNV
+zAvFy*4;_A%ulawP-dAV7lQYwNIXzePoL5Wg;xwGTuJKu0Wx30e6DPA?T!<|aF!epU
+z?^yb=`S~Yz^n^~_`en!ZBM&bGyh+)6f@d;M{p;iUng7>aGv#<WOGkULV&Ly4xx0K}
+z^CT3{*W5U^)9mwP`;hvxcQ)S+uns#{D=_oIrJ}ulu1Y)8%1qlIbsu)i7F(;g?|0tB
+zW6R4fB}nyUPHJU!JTD+QvwP9cjON){k$dm{?0z*%#COlNyI~h*Gs&&Gw`gaFW~TXt
+zyu~#icD&eJKcVi4z?0^Gw?)0Il+U~?c=nDZ!JUoaMSXHurdHaG%N%0Hljpi7KNWZ&
+z^uI*yMgFVB8c~P7#ny)1OPv?!(saMCnK?4YZR1p*xtr8>id}2=R+U(*v?6Z9&8ahU
+zx{pqL_%`}hf5w7VF`<i|KFeOkL_IB!h;_+Zdn>H;mmH@^dRhGuujYWG0m{$4Q=@Xd
+zy<3+akn+#bURB&s#&d;pSInD|8u=;VSr!GMEX7M1YPZ=Y+PtkPi1{ybV&S&QYAj05
+z)7UaD3W`0++2xS_^o0G>Pg{gOW(4kU-901l>#xP1=Xw8~T6UmAZ2L@^-o=ceRq@QC
+z1=oWzcZr|>8JPe~(+sbLmw#`sKlc101LINF6A}yz-49}3Z{|=gU}0pL?8qcMxkp`w
+ZQ$iY~lz~BF@<w%YPI!LY{83$<2>`Gvy%qof
+
+delta 984
+zcmbOcG9zTd49*Z41~3SjxNyIq0F(o#Cl@kq7nsIq5i7#bu<^Z)(4v0-S@M$?GD>U?
+zU{YXVR?wKZxtL9lneV}}pn681kKD2uliqO0PF~L`%aqG8`5dP_<H^nMIMoEX!!wJs
+zD<L*b7ME6JG?*MHEzD{H6j1@P#3dzO|Nrm62vGncMSwU3h#e+30%fnf{r`UoNEixq
+zfHa67FnOc2KI4_i52cMQ5?=lPukru?{~RFg0HiB`bOeyz0W`S)NT&eJ=m63`fb;?&
+zz2@8h{}+Jt=0KSk#?2dKr!X<Dn(V4zS|7cISAW6Lj_+rf9Va}WHGfz8#&wgj>ZiSr
+zve1=1uP?Z#MqvAgZ%)!yTp6$Rj^4;@SvbXavB!__;OLN*{J9o$?uUGxx-#9mX!Xr~
+zU#9)<6#T6Abh&BKZt;DmFTZS5a^AV%w|hWuMBx0ZRtBm|VjTB#d)_F`IsHH0ljGe+
+zu9N)->u<AvJH2t~K{1PiSDyYl^xNs1Dnqb!QeC5y_5yE{E7x-_OqqV8qG#irt0{lB
+z&Al77NjiTK2W#{}A&#ZLGxvmj+N7qLBQMe}WUw>Dlk<p}MTXeSNn7ipW*@&kYtGk@
+z9~nKH^XAUmaeRSqSHT~ZmKooyi_eFyFiHQd#8)En{FvRJ`lmfNEmR6j_dVeha+6?N
+zD81CwAoTwOspp3-3bpL*X;aAm%|AEw{Kt)N&q+s_J~8>Yca_=H>NUAvlE3J%>u-$s
+z%k%8hJq7*kALpJ?+;bqGWrJYI(iQiZPBy0gh`!ajIow$+N5p1^0i$z5Yro&UKi-R0
+z3zr2)9JsMGZMI*0bxTbByyJU0H7n+cCEr)FGxpGWVk$iK#8kI0?VUea&$Y-bD>_=~
+z8Qu3yNb!}M<*Y3nCSLn*-rK2d%IW_sYTgguV3GUZw`sS({?zz3tl;y8H!H9H)!=8D
+zGq?NKgv*j;%fBU`y6{}S|9lSPyv1&HA1A7%NmQIueXV&R>B|PLbC>z8B)8Oeh@LN!
+z`nbX89pj7F+!LFW&&CA2bf4`%tyyf}s|_jK``lQ0Ph6Y3>DZg8`fWj8nQx!<d-$Fz
+zHwpYRZ}R?$f07>Q{$MQ-i}&~cr+NRBOUG~NaL3u+$*f1km=`imD_>VO{YI(8fm>@^
+z`%6vp)Jx`?urL4lK%oA?kJs4(pwt~9{EFGG|L^l_42;KEPe?E@s7^YOyO~3|fQ6B5
+hvLlo5<Q{byP6cU@QU(Tv$s5(pIpMi=^G9`cCII8uyj%bP
+
+diff --git a/libregal/libeink.h b/libregal/libeink.h
+index b0aadcc..fb198d0 100755
+--- a/libregal/libeink.h
++++ b/libregal/libeink.h
+@@ -1,75 +1,60 @@
+-/*
+- * E Ink - pixel process library
+- *
+- * Copyright (C) 2020 E Ink Holdings Inc.
+- *
+- */
+-
+-#ifndef LIBEINK_H
+-#define LIBEINK_H
+-
+-#if defined(__cplusplus)
+-extern "C" {
+-#endif
+-
+-namespace android {
+-
+-/**
+- * wbf:
+- *     The input wbf file for reference
+- * return: 0 , Success
+- *         others , Fail
+- */
+-int EInk_Init(char *wbf);
+-
+-/**
+- * image:
+- *     The Y8 image to be processed, the content may be modifed.
+- *
+- * previous:
+- *     The previous Y8 image, which's content won't be modified.
+- *
+- * width, height:
+- *     The dimension of both images.
+- *     Assume the stride == width.
+- *
+- * Note:
+- *     Do not apply other image prcossing methods after eink_process().
+- *
+- */
+-void eink_process(uint8_t *image, uint8_t *previous,
+-                  uint32_t width, uint32_t height);
+-/**
+- * color:
+- *     The current color image with RGB format, which's content won't be modified.
+- * 
+- * image:
+- *     The current Y8 image to be processed, the content may be modifed.
+- *
+- * previous:
+- *     The previous Y8 image, the content may be modifed.
+- *
+- * width, height:
+- *     The dimension of both images.
+- *     Assume the stride == width.
+- *
+- * Note:
+- *     Do not apply other image prcossing methods after eink_process().
+- *
+- */
+-void eink_process_color(uint8_t *color, uint8_t *image, uint8_t *previous,
+-                  uint32_t width, uint32_t height);
+-
+-/**
+- *
+- * return:
+- *     The build date in decimal number, Ex: 20200225 => Feb 25, 2020.
+- */
+-uint32_t eink_get_version(void);
+-
+-}
+-#if defined(__cplusplus)
+-}
+-#endif
+-
+-#endif /* LIBEINK_H */
++/*
++ * E Ink - pixel process library
++ *
++ * Copyright (C) 2020 E Ink Holdings Inc.
++ *
++ */
++
++
++/**
++ * wbf:
++ *     The input wbf file for reference
++ * return: 0 , Success
++ *         others , Fail
++ */
++int EInk_Init(char *wbf);
++
++/**
++ * image:
++ *     The Y8 image to be processed, the content may be modifed.
++ *
++ * previous:
++ *     The previous Y8 image, which's content won't be modified.
++ *
++ * width, height:
++ *     The dimension of both images.
++ *     Assume the stride == width.
++ *
++ * Note:
++ *     Do not apply other image prcossing methods after eink_process().
++ *
++ */
++void eink_process(uint8_t *image, uint8_t *previous,
++                  uint32_t width, uint32_t height);
++/**
++ * color:
++ *     The current color image with RGB format, which's content won't be modified.
++ * 
++ * image:
++ *     The current Y8 image to be processed, the content may be modifed.
++ *
++ * previous:
++ *     The previous Y8 image, the content may be modifed.
++ *
++ * width, height:
++ *     The dimension of both images.
++ *     Assume the stride == width.
++ *
++ * Note:
++ *     Do not apply other image prcossing methods after eink_process().
++ *
++ */
++void eink_process_color(uint8_t *color, uint8_t *image, uint8_t *previous,
++                  uint32_t width, uint32_t height);
++
++/**
++ *
++ * return:
++ *     The build date in decimal number, Ex: 20200225 => Feb 25, 2020.
++ */
++uint32_t eink_get_version(void);
+diff --git a/rgb888_to_gray_256_neon.s b/rgb888_to_gray_256_neon.s
+old mode 100644
+new mode 100755
+diff --git a/separate_rects.cpp b/separate_rects.cpp
+old mode 100644
+new mode 100755
+diff --git a/separate_rects.h b/separate_rects.h
+old mode 100644
+new mode 100755
+diff --git a/vsyncworker.cpp b/vsyncworker.cpp
+old mode 100644
+new mode 100755
+diff --git a/vsyncworker.h b/vsyncworker.h
+old mode 100644
+new mode 100755
+diff --git a/worker.cpp b/worker.cpp
+old mode 100644
+new mode 100755
+diff --git a/worker.h b/worker.h
+old mode 100644
+new mode 100755
+-- 
+2.25.1
+

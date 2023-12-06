@@ -1,0 +1,46 @@
+From d7c017efc996e2a6764a397b365597505e8978da Mon Sep 17 00:00:00 2001
+From: chenchangxiong <chenchangxiong@wisky.com.cn>
+Date: Wed, 7 Jun 2023 15:51:22 +0800
+Subject: [PATCH 2/2] =?UTF-8?q?=E8=B0=83=E8=AF=95libeink.h?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Change-Id: Ifc7cd5bee35f3d9c60476863f5bf73b2676ac23b
+---
+ libregal/libeink.h | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/libregal/libeink.h b/libregal/libeink.h
+index fb198d0..1597e3d 100755
+--- a/libregal/libeink.h
++++ b/libregal/libeink.h
+@@ -5,6 +5,14 @@
+  *
+  */
+ 
++#ifndef LIBEINK_H
++#define LIBEINK_H
++
++#if defined(__cplusplus)
++extern "C" {
++#endif
++
++namespace android {
+ 
+ /**
+  * wbf:
+@@ -58,3 +66,10 @@ void eink_process_color(uint8_t *color, uint8_t *image, uint8_t *previous,
+  *     The build date in decimal number, Ex: 20200225 => Feb 25, 2020.
+  */
+ uint32_t eink_get_version(void);
++
++}
++#if defined(__cplusplus)
++}
++#endif
++
++#endif /* LIBEINK_H */
+-- 
+2.25.1
+
